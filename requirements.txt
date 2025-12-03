@@ -1,3 +1,6 @@
 pymupdf
 sentence-transformers
 faiss-cpu
+langchain
+langchain-ollama
+pydantic>=2
