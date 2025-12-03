@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# Local data & models
+data/
+models/
+outputs/
+
+# VSCode / IDE
+.vscode/
+.idea/
