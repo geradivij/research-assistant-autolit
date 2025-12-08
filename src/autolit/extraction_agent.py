@@ -209,13 +209,13 @@ You are an AI assistant that reads academic papers and extracts structured infor
 You will be given context from a single paper (abstract, introduction, conclusion, and other key parts).
 Based ONLY on this context, infer and fill in the following fields in full detailed sentences:
 
-- task: What is the main problem or research question?
-- approach: What methods, models, or techniques are used?
+- task: What is the main problem or research question? Write in atleast 2 full sentences
+- approach: What methods, models, or techniques are used? Write in atleast 2 full sentences
 - datasets: Names/descriptions of datasets used (if any). List everything you can find by name. Empty list if none mentioned.
 - metrics: Evaluation metrics used (e.g., accuracy, BLEU, perplexity). List everything you can find by name. Empty list if none mentioned.
-- key_results: Main findings or quantitative results, must include numbers if present.
+- key_results: Main findings or quantitative results, must include numbers if present. Write in full sentences
 - limitations: Stated or implied limitations or open questions.
-- notes: Any extra details that seem important (optional).
+- notes: Include a one paragraph summary of the entire paper
 
 If something is not clearly stated, make a best-effort inference, but don't hallucinate wildly.
 Keep text concise but specific.
