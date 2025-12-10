@@ -1,32 +1,35 @@
 """
-extraction_agent.py
+extraction_agent.py — Per-Field RAG Extraction
 
-Single-paper "Reader Agent" that:
-- Ensures a FAISS index exists for the paper
-- Gathers good context (abstract/intro + conclusion + key chunks)
-- Uses Llama via LangChain + Ollama to extract a structured summary.
+Phase 2 “Reader Agent” redesigned for robustness:
+- NO giant multi-field JSON prompt.
+- NO multi-paragraph mega summary generation.
+- Each field extracted independently using:
+    (1) field-specific semantic retrieval
+    (2) small curated context
+    (3) a tiny, strict question to the LLM
+- Final output assembled as a clean PaperSummary Pydantic model.
 
-Output schema:
-- task
-- approach
-- datasets
-- metrics
-- key_results
-- limitations
+Output JSON includes:
+- task (3–5 sentences)
+- approach (4–6 sentences)
+- datasets (list[str])
+- metrics (list[str])
+- key_results (4–6 sentences)
+- limitations (3–5 sentences)
+- notes (150–250 word overview)
 """
 
 from __future__ import annotations
-
+from typing import List, Dict
 from pathlib import Path
-from typing import List, Dict, Optional
+import json
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, Field, ValidationError
 from langchain_ollama import ChatOllama
 
 from .vector_store import FaissVectorStore
 from .rag_query import (
-    DATA_DIR,
     PDF_DIR,
     INDEX_DIR,
     build_index_for_pdf,
@@ -34,43 +37,25 @@ from .rag_query import (
 )
 
 
-# ---------- Pydantic schema for structured output ----------
+# ----------------------------
+#  Pydantic Schema
+# ----------------------------
 
 class PaperSummary(BaseModel):
-    """Structured summary of a single paper."""
-    task: str = Field(
-        description="What problem or research question does the paper tackle?"
-    )
-    approach: str = Field(
-        description="How does the paper approach the problem? Key methods or models."
-    )
-    datasets: List[str] = Field(
-        default_factory=list,
-        description="Names or descriptions of any datasets used.",
-    )
-    metrics: List[str] = Field(
-        default_factory=list,
-        description="Evaluation metrics used (e.g., accuracy, BLEU, perplexity).",
-    )
-    key_results: str = Field(
-        description="Main findings or quantitative results of the paper."
-    )
-    limitations: str = Field(
-        description="Stated or implied limitations, caveats, or open questions."
-    )
-    notes: Optional[str] = Field(
-        default=None,
-        description="Any extra important details not covered above.",
-    )
+    task: str
+    approach: str
+    datasets: List[str] = Field(default_factory=list)
+    metrics: List[str] = Field(default_factory=list)
+    key_results: str
+    limitations: str
+    notes: str
 
 
-# ---------- Context gathering helpers ----------
+# ----------------------------
+#  Load/Ensure Index
+# ----------------------------
 
 def _ensure_index_and_chunks(paper_id: str) -> List[Dict]:
-    """
-    Make sure FAISS index + chunks exist for this paper.
-    Returns the loaded chunks list.
-    """
     pdf_path = PDF_DIR / f"{paper_id}.pdf"
     index_dir = INDEX_DIR / paper_id
 
@@ -87,145 +72,201 @@ def _ensure_index_and_chunks(paper_id: str) -> List[Dict]:
     return chunks
 
 
-def _select_structured_context(
+# ----------------------------
+#  Field-specific Retrieval
+# ----------------------------
+
+FIELD_QUERIES = {
+    "task": (
+        "What problem or task does this paper study? "
+        "Look for sentences that describe the goal or research question."
+    ),
+    "approach": (
+        "What is the main method, model, or approach proposed by this paper? "
+        "Look for phrases like 'we propose', 'our method', 'our approach'."
+    ),
+    "datasets": (
+        "Which datasets are used in the experiments? "
+        "Look for dataset names like CIFAR, ImageNet, WikiText, etc."
+    ),
+    "metrics": (
+        "What evaluation metrics are used to assess the model? "
+        "Look for metric names like accuracy, F1, BLEU, perplexity, loss."
+    ),
+    "key_results": (
+        "What are the main quantitative results and performance numbers reported? "
+        "Look for percentages, scores, improvements, or trends."
+    ),
+    "limitations": (
+        "What limitations, weaknesses, or future work does the paper discuss? "
+        "Look for sentences about drawbacks or open questions."
+    ),
+    "notes": (
+        "Summarize the entire paper: task, approach, experiments, results, significance. "
+        "A 150–250 word overview."
+    ),
+}
+
+
+def _retrieve_context_for_field(
     paper_id: str,
-    max_chunks: int = 24,
-    per_query_k: int = 4,
+    field: str,
+    chunks: List[Dict],
+    per_query_k: int = 5,
+    max_chunks: int = 8,
 ) -> str:
-    """
-    Build a context string by doing field-specific semantic retrieval
-    rather than naive first/last-page heuristics.
-
-    We run several targeted queries (task, approach, datasets, metrics, etc.)
-    and merge the retrieved chunks.
-    """
+    """Retrieve small, tight context specific to one field."""
     index_dir = INDEX_DIR / paper_id
-
-    # Ensure we have chunks + index
-    chunks = _ensure_index_and_chunks(paper_id)
     store = FaissVectorStore.load(index_dir)
+
+    query = FIELD_QUERIES[field]
+    results = store.search(query, k=per_query_k)
 
     idx_to_chunk = {i: c for i, c in enumerate(chunks)}
 
-    # Field-specific retrieval queries
-    retrieval_queries = {
-        "task": (
-            "What problem or task does this paper study? "
-            "Look for sentences that describe the goal or research question."
-        ),
-        "approach": (
-            "What is the main method, model, or approach proposed by this paper? "
-            "Look for phrases like 'we propose', 'our method', 'our approach'."
-        ),
-        "datasets": (
-            "Which datasets are used in the experiments? "
-            "Look for dataset names and descriptions."
-        ),
-        "metrics": (
-            "What evaluation metrics are used to assess the model or method? "
-            "Look for metric names such as accuracy, BLEU, F1, perplexity, etc."
-        ),
-        "key_results": (
-            "What are the main quantitative results and performance numbers reported? "
-            "Look for tables or sentences with percentages, scores, or improvements."
-        ),
-        "limitations": (
-            "What limitations, weaknesses, or open questions does the paper discuss? "
-            "Look for a limitations or future work section, or discussion of drawbacks."
-        ),
-    }
+    selected = []
+    seen = set()
 
-    seen_ids = set()
-    all_chunks: List[Dict] = []
+    for r in results:
+        i = r["index"]
+        if i == -1:
+            continue
+        ch = idx_to_chunk[i]
+        cid = ch["chunk_id"]
+        if cid not in seen:
+            selected.append(ch)
+            seen.add(cid)
 
-    # Always include a couple of chunks from the first page (abstract/intro)
-    page_nums = sorted({c["page_num"] for c in chunks})
-    first_page = page_nums[0]
-    first_page_chunks = [c for c in chunks if c["page_num"] == first_page][:3]
-    for c in first_page_chunks:
-        cid = c["chunk_id"]
-        if cid not in seen_ids:
-            seen_ids.add(cid)
-            all_chunks.append(c)
+        if len(selected) >= max_chunks:
+            break
 
-    # Field-specific semantic retrieval
-    for label, query in retrieval_queries.items():
-        results = store.search(query, k=per_query_k)
-        for r in results:
-            i = r["index"]
-            if i == -1:
-                continue
-            c = idx_to_chunk[i]
-            cid = c["chunk_id"]
-            if cid not in seen_ids:
-                seen_ids.add(cid)
-                all_chunks.append(c)
+    # Fallback: if FAISS gives nothing, include abstract chunks
+    if not selected:
+        page_nums = sorted({c["page_num"] for c in chunks})
+        first_page = page_nums[0]
+        selected = [c for c in chunks if c["page_num"] == first_page][:3]
 
-    # Limit total number of chunks
-    all_chunks = all_chunks[:max_chunks]
+    out = []
+    for c in selected:
+        t = c["text"].strip().replace("\n", " ")
+        out.append(f"[Page {c['page_num']}] {t}")
 
-    # Build context block
-    context_parts = []
-    for c in all_chunks:
-        page = c["page_num"]
-        text = c["text"].strip().replace("\n", " ")
-        context_parts.append(f"[Page {page}] {text}")
-
-    context = "\n\n".join(context_parts)
-    return context
+    return "\n".join(out)
 
 
-# ---------- LLM extraction chain ----------
+# ----------------------------
+#  LLM Helpers
+# ----------------------------
 
-def _get_structured_llm(model_name: str = "llama3") -> ChatOllama:
-    """
-    Initialize ChatOllama and wrap it with structured output using PaperSummary.
-    """
-    base_llm = ChatOllama(
+def _get_llm(model_name: str = "llama3") -> ChatOllama:
+    return ChatOllama(
         model=model_name,
-        temperature=0.1,
+        temperature=0.2,
     )
-    structured_llm = base_llm.with_structured_output(PaperSummary)
-    return structured_llm
 
+
+def _ask_field_llm(field: str, context: str, model_name: str) -> str:
+    """Small, simple prompt strictly for one field."""
+    llm = _get_llm(model_name)
+
+    if field == "datasets":
+        instruction = (
+            "List all datasets mentioned. "
+            "Output ONLY dataset names, optionally followed by ' - short description'. "
+            "ONE dataset per line. "
+            "Do NOT include any introductory sentence or notes."
+        )
+    elif field == "metrics":
+        instruction = (
+            "List all metrics mentioned. "
+            "Output ONLY metric names, optionally followed by ' - short description'. "
+            "ONE metric per line. "
+            "Do NOT include any introductory sentence or notes."
+        )
+    elif field == "notes":
+        instruction = (
+            "Write a 150–250 word paragraph summarizing the entire paper. "
+            "Use full sentences. "
+            "Do NOT mention 'context', 'request', or that you are summarizing. "
+            "Just write the summary directly."
+        )
+    else:
+        # Text fields
+        base = {
+            "task": "Write 3–5 full sentences describing the task and motivation.",
+            "approach": "Write 4–6 full sentences describing the method and approach.",
+            "key_results": "Write 4–6 full sentences summarizing the main quantitative findings.",
+            "limitations": "Write 3–5 full sentences describing limitations or future work.",
+        }[field]
+        instruction = (
+            base
+            + " Do NOT mention 'context', 'request', or that you are answering a question. "
+              "Write directly about the paper."
+        )
+
+    prompt = f"""
+You are an expert research assistant.
+
+Using ONLY the context below, answer the following request.
+
+==REQUEST==
+{instruction}
+
+==CONTEXT==
+{context}
+
+If the context does not contain the answer, respond exactly with: Not specified.
+"""
+
+    print(f"[extraction] Asking LLM for field: {field}")
+    resp = llm.invoke(prompt)
+    return resp.content.strip()
+
+
+
+def _parse_list_field(text: str) -> List[str]:
+    """Convert multi-line bullet list to a Python list."""
+    lines = [l.strip("-• ").strip() for l in text.splitlines()]
+    lines = [l for l in lines if l and l.lower() != "not specified."]
+    return lines
+
+
+# ----------------------------
+#  Main Extraction Pipeline
+# ----------------------------
 
 def summarize_paper_structured(
     paper_id: str,
     model_name: str = "llama3",
 ) -> PaperSummary:
-    """
-    Main entrypoint: given a paper_id (PDF name without .pdf),
-    return a PaperSummary Pydantic object.
+    print(f"[extraction] Loading index & chunks for paper: {paper_id}")
+    chunks = _ensure_index_and_chunks(paper_id)
 
-    - Builds/gathers context
-    - Calls Llama via LangChain with structured output
-    """
-    print(f"[extraction] Building context for paper_id={paper_id}...")
-    context = _select_structured_context(paper_id)
+    summary_data = {}
 
-    prompt = f"""
-You are an AI assistant that reads academic papers and extracts structured information.
+    # Extract each field independently
+    for field in ["task", "approach", "datasets", "metrics", "key_results", "limitations", "notes"]:
+        print(f"\n=== Extracting field: {field} ===")
 
-You will be given context from a single paper (abstract, introduction, conclusion, and other key parts).
-Based ONLY on this context, infer and fill in the following fields in full detailed sentences:
+        context = _retrieve_context_for_field(paper_id, field, chunks)
 
-- task: What is the main problem or research question? Write in atleast 2 full sentences
-- approach: What methods, models, or techniques are used? Write in atleast 2 full sentences
-- datasets: Names/descriptions of datasets used (if any). List everything you can find by name. Empty list if none mentioned.
-- metrics: Evaluation metrics used (e.g., accuracy, BLEU, perplexity). List everything you can find by name. Empty list if none mentioned.
-- key_results: Main findings or quantitative results, must include numbers if present. Write in full sentences
-- limitations: Stated or implied limitations or open questions.
-- notes: Include a one paragraph summary of the entire paper
+        raw_answer = _ask_field_llm(field, context, model_name)
 
-If something is not clearly stated, make a best-effort inference, but don't hallucinate wildly.
-Keep text concise but specific.
+        # Clean up list fields
+        if field in ["datasets", "metrics"]:
+            summary_data[field] = _parse_list_field(raw_answer)
+        else:
+            summary_data[field] = (
+                raw_answer if raw_answer.strip() else "Not specified."
+            )
 
-Context:
-{context}
-"""
+    # Validate via Pydantic
+    try:
+        summary = PaperSummary(**summary_data)
+    except ValidationError as e:
+        print(summary_data)
+        raise ValueError(
+            f"Generated fields failed schema validation:\n{e}"
+        )
 
-    llm = _get_structured_llm(model_name=model_name)
-
-    # This returns a PaperSummary instance directly thanks to structured output.
-    summary: PaperSummary = llm.invoke(prompt)
     return summary
