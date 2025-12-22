@@ -50,25 +50,123 @@ def load_all_summaries(summaries_dir: str) -> List[PaperSummary]:
 # ---------------------------------------------------------
 # Helper — robust JSON parsing (handles ```json fences)
 # ---------------------------------------------------------
-def _parse_json_from_model(raw: str) -> Any:
-    """
-    Llama sometimes wraps JSON in ```json ... ``` fences.
-    This helper strips those and parses the JSON.
-    """
-    text = raw.strip()
-
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        # Remove first line (``` or ```json)
-        lines = text.splitlines()
-        # Drop the first line
-        lines = lines[1:]
-        # If last line is ``` then drop it too
+def _strip_code_fences(text: str) -> str:
+    t = text.strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        lines = lines[1:]  # drop ``` or ```json
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
-        text = "\n".join(lines).strip()
+        t = "\n".join(lines).strip()
+    return t
+
+
+def _extract_json_object(text: str) -> str:
+    """
+    Extract the first top-level JSON object {...} from a string.
+    This helps if the model adds any stray text before/after.
+    """
+    s = text.strip()
+    start = s.find("{")
+    if start == -1:
+        return s
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for i in range(start, len(s)):
+        ch = s[i]
+
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        else:
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return s[start : i + 1]
+
+    # If we never closed, return best-effort substring
+    return s[start:]
+
+
+def _parse_json_from_model(raw: str) -> Any:
+    """
+    Robust JSON parsing:
+      - strips ```json fences
+      - extracts first {...} JSON object
+      - tries json.loads
+    """
+    text = _strip_code_fences(raw)
+    text = _extract_json_object(text)
 
     return json.loads(text)
+
+def _parse_or_repair_json(raw: str) -> Any:
+    """
+    Try parse; if it fails, ask the model to repair into valid JSON.
+    """
+    try:
+        return _parse_json_from_model(raw)
+    except json.JSONDecodeError:
+        # Print raw for debugging once
+        print("\n========== MODEL RAW OUTPUT (JSON PARSE FAILED) ==========\n")
+        print(raw)
+        print("\n========== END MODEL RAW OUTPUT ==========\n")
+
+        # Repair attempt
+        repaired = _repair_json_with_model(raw)
+        return repaired
+
+
+
+def _repair_json_with_model(raw: str) -> Any:
+    system_prompt = (
+        "You are a strict JSON repair assistant.\n"
+        "You will receive text intended to be a JSON object, but it may be invalid.\n"
+        "Fix it to become STRICT valid JSON (RFC 8259).\n"
+        "Rules:\n"
+        "- Output ONLY the JSON object.\n"
+        "- Escape all newline characters inside strings as \\n.\n"
+        "- Do not use trailing commas.\n"
+        "- Use double quotes for all keys and string values.\n"
+        "- No markdown fences.\n"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": raw},
+    ]
+
+    fixed = chat(messages, temperature=0.0)
+    fixed = _strip_code_fences(fixed)
+    fixed = _extract_json_object(fixed)
+    return json.loads(fixed)
+
+
+def _extract_between(text: str, start_tag: str, end_tag: str) -> str:
+    s = text
+    start = s.find(start_tag)
+    if start == -1:
+        raise RuntimeError(f"Could not find start tag: {start_tag}")
+    start += len(start_tag)
+
+    end = s.find(end_tag, start)
+    if end == -1:
+        raise RuntimeError(f"Could not find end tag: {end_tag}")
+
+    return s[start:end].strip()
 
 # ---------------------------------------------------------
 # STEP 2 — Paper Selection Agent
@@ -130,7 +228,12 @@ def select_papers_for_topic(
     raw = chat(messages, temperature=0.0)
 
     # Parse JSON robustly
-    data = _parse_json_from_model(raw)
+    try:
+        data = _parse_json_from_model(raw)
+    except json.JSONDecodeError:
+        # One repair attempt
+        data = _repair_json_with_model(raw)
+
 
     selected_ids = data.get("selected_papers", [])
     if not isinstance(selected_ids, list):
@@ -152,57 +255,52 @@ def select_papers_for_topic(
 # ---------------------------------------------------------
 # STEP 3 — Comparator Agent
 # ---------------------------------------------------------
-def compare_papers(
-    papers: List[PaperSummary],
-) -> Tuple[List[Dict[str, Any]], str]:
+def compare_papers(papers: List[PaperSummary]) -> Tuple[List[Dict[str, Any]], str]:
     """
-    Ask Llama to:
-      1) Build a comparison table across the given papers.
-      2) Write a natural-language critique.
-
-    Returns:
-      comparison_table: list of dicts (one row per paper)
-      critique: string
+    Comparator Agent (delimiter-based to avoid JSON failures):
+      - Outputs a JSON comparison table inside BEGIN_JSON/END_JSON
+      - Outputs critique text inside BEGIN_CRITIQUE/END_CRITIQUE
     """
-
     if not papers:
         raise ValueError("compare_papers called with empty paper list.")
 
-    # Prepare data for the model – one dict per paper
     paper_entries: List[Dict[str, Any]] = []
     for p in papers:
-        entry = {
-            "paper_id": p.paper_id,
-            **p.summary,   # unpack your Phase 2 JSON fields
-        }
-        paper_entries.append(entry)
+        paper_entries.append({"paper_id": p.paper_id, **p.summary})
 
-    payload = {"papers": paper_entries}
-    user_json = json.dumps(payload, indent=2)
+    user_json = json.dumps({"papers": paper_entries}, indent=2)
 
     system_prompt = (
         "You are a Comparator Agent for machine learning research papers.\n"
-        "You will receive a list of paper summaries, each including a paper_id and fields like "
-        "task, approach, datasets, metrics, key_results, limitations, and notes.\n\n"
-        "Your job has two parts:\n"
-        "1) Build a COMPARISON TABLE, where each row corresponds to one paper and has keys:\n"
-        "   - paper_id (exactly as given)\n"
-        "   - title (if available in the summary; otherwise, invent a short descriptive title)\n"
-        "   - task\n"
-        "   - approach\n"
-        "   - datasets\n"
-        "   - metrics\n"
-        "   - key_results\n"
-        "   - strengths\n"
-        "   - weaknesses\n"
-        "2) Write a NATURAL LANGUAGE CRITIQUE comparing the papers, discussing similarities,\n"
-        "   differences, trade-offs, and when one approach might be preferred over another.\n\n"
-        "You MUST return ONLY a valid JSON object with exactly two keys:\n"
+        "You will receive a list of paper summaries.\n\n"
+        "You must output EXACTLY TWO BLOCKS in this order:\n"
+        "1) A valid JSON object containing ONLY the comparison table\n"
+        "2) A natural language critique\n\n"
+        "FORMAT:\n"
+        "BEGIN_JSON\n"
         "{\n"
-        "  \"comparison_table\": [ { ...row1... }, { ...row2... }, ... ],\n"
-        "  \"critique\": \"multi-paragraph text here\"\n"
+        "  \"comparison_table\": [\n"
+        "    {\n"
+        "      \"paper_id\": \"...\",\n"
+        "      \"title\": \"...\",\n"
+        "      \"task\": \"...\",\n"
+        "      \"approach\": \"...\",\n"
+        "      \"datasets\": [\"...\"],\n"
+        "      \"metrics\": [\"...\"],\n"
+        "      \"key_results\": \"...\",\n"
+        "      \"strengths\": \"...\",\n"
+        "      \"weaknesses\": \"...\"\n"
+        "    }\n"
+        "  ]\n"
         "}\n"
-        "Do not include any explanation or text outside this JSON. No markdown, no comments."
+        "END_JSON\n\n"
+        "BEGIN_CRITIQUE\n"
+        "(write critique here)\n"
+        "END_CRITIQUE\n\n"
+        "Rules:\n"
+        "- The JSON block MUST be strictly valid JSON.\n"
+        "- Do NOT put the critique inside JSON.\n"
+        "- Do NOT output anything outside these blocks."
     )
 
     messages = [
@@ -210,17 +308,20 @@ def compare_papers(
         {"role": "user", "content": user_json},
     ]
 
-    # Call Llama
     raw = chat(messages, temperature=0.1)
 
-    # Parse JSON robustly
-    data = _parse_json_from_model(raw)
+    # Extract JSON block
+    json_block = _extract_between(raw, "BEGIN_JSON", "END_JSON")
+    critique_block = _extract_between(raw, "BEGIN_CRITIQUE", "END_CRITIQUE")
 
-    comparison_table = data.get("comparison_table", [])
-    critique = data.get("critique", "")
+    # Parse JSON safely (strip fences just in case)
+    json_block = _strip_code_fences(json_block)
+    json_block = _extract_json_object(json_block)
+    data = json.loads(json_block)
 
-    if not isinstance(comparison_table, list):
-        raise RuntimeError("'comparison_table' is not a list in model output.")
+    table = data.get("comparison_table", [])
+    if not isinstance(table, list):
+        raise RuntimeError("'comparison_table' is not a list in comparator output.")
 
-    if not isinstance(critique, str):
-        raise RuntimeError("'critique' is not a string in model output.")
+    critique = critique_block.strip()
+    return table, critique
