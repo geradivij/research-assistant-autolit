@@ -155,8 +155,9 @@ def _repair_json_with_model(raw: str) -> Any:
     return json.loads(fixed)
 
 
-def _extract_between(text: str, start_tag: str, end_tag: str) -> str:
+def _extract_between(text: str, start_tag: str, end_tag: str, *, allow_missing_end: bool = False) -> str:
     s = text
+
     start = s.find(start_tag)
     if start == -1:
         raise RuntimeError(f"Could not find start tag: {start_tag}")
@@ -164,6 +165,9 @@ def _extract_between(text: str, start_tag: str, end_tag: str) -> str:
 
     end = s.find(end_tag, start)
     if end == -1:
+        if allow_missing_end:
+            # Take everything after the start tag
+            return s[start:].strip()
         raise RuntimeError(f"Could not find end tag: {end_tag}")
 
     return s[start:end].strip()
@@ -300,7 +304,8 @@ def compare_papers(papers: List[PaperSummary]) -> Tuple[List[Dict[str, Any]], st
         "Rules:\n"
         "- The JSON block MUST be strictly valid JSON.\n"
         "- Do NOT put the critique inside JSON.\n"
-        "- Do NOT output anything outside these blocks."
+        "- Do NOT output anything outside these blocks.\n"
+        "The final line of your response MUST be: END_CRITIQUE"
     )
 
     messages = [
@@ -312,7 +317,8 @@ def compare_papers(papers: List[PaperSummary]) -> Tuple[List[Dict[str, Any]], st
 
     # Extract JSON block
     json_block = _extract_between(raw, "BEGIN_JSON", "END_JSON")
-    critique_block = _extract_between(raw, "BEGIN_CRITIQUE", "END_CRITIQUE")
+    critique_block = _extract_between(raw, "BEGIN_CRITIQUE", "END_CRITIQUE", allow_missing_end=True)
+
 
     # Parse JSON safely (strip fences just in case)
     json_block = _strip_code_fences(json_block)
@@ -325,3 +331,104 @@ def compare_papers(papers: List[PaperSummary]) -> Tuple[List[Dict[str, Any]], st
 
     critique = critique_block.strip()
     return table, critique
+
+
+# ---------------------------------------------------------
+# STEP 4 — Writer Agent
+# ---------------------------------------------------------
+def write_survey_markdown(
+    topic: str,
+    papers: List[PaperSummary],
+    comparison_table: List[Dict[str, Any]],
+    critique: str,
+) -> str:
+    """
+    Writer Agent:
+      - Takes summaries + comparison table + critique
+      - Produces a mini survey in Markdown
+    """
+    payload = {
+        "topic": topic,
+        "papers": [{"paper_id": p.paper_id, **p.summary} for p in papers],
+        "comparison_table": comparison_table,
+        "critique": critique,
+    }
+    user_json = json.dumps(payload, indent=2)
+
+    system_prompt = (
+        "You are a Writer Agent drafting a short survey-style report in Markdown.\n"
+        "Using the provided topic, paper summaries, comparison table, and critique, "
+        "write a mini survey in MARKDOWN with these sections EXACTLY:\n\n"
+        "# Introduction\n"
+        "## Individual Papers\n"
+        "## Comparison\n"
+        "## Limitations\n"
+        "## Future Work\n\n"
+        "Rules:\n"
+        "- Use clear headings and subheadings.\n"
+        "- Under 'Individual Papers', include one subsection per paper, using the paper_id in the heading.\n"
+        "- In 'Comparison', incorporate the comparison_table and critique.\n"
+        "- Output ONLY Markdown (no JSON, no extra commentary).\n"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_json},
+    ]
+
+    md = chat(messages, temperature=0.3)
+    return md.strip()
+
+# ---------------------------------------------------------
+# STEP 5 — Orchestrator: select → compare → write → save
+# ---------------------------------------------------------
+def run_survey_pipeline(
+    topic: str,
+    summaries_dir: str = "outputs/summaries",
+    surveys_dir: str = "outputs/surveys",
+    top_k: int = 3,
+) -> str:
+    """
+    End-to-end Phase 3 pipeline:
+      1) Load all Phase 2 summaries
+      2) Select top_k relevant papers for topic
+      3) Compare selected papers
+      4) Write survey Markdown
+      5) Save markdown to outputs/surveys/<slug>_survey.md
+
+    Returns the output file path.
+    """
+    os.makedirs(surveys_dir, exist_ok=True)
+
+    # 1) Load
+    all_papers = load_all_summaries(summaries_dir)
+
+    # 2) Select
+    selected = select_papers_for_topic(topic, all_papers, top_k=top_k)
+    if not selected:
+        raise RuntimeError("No papers selected for the topic.")
+
+    # 3) Compare
+    comparison_table, critique = compare_papers(selected)
+
+    # 4) Write
+    md = write_survey_markdown(topic, selected, comparison_table, critique)
+
+    # 5) Save
+    slug = (
+        topic.lower()
+        .strip()
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace(":", "")
+        .replace("?", "")
+        .replace(".", "")
+    )
+    out_path = os.path.join(surveys_dir, f"{slug}_survey.md")
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(md)
+        f.write("\n")
+
+    return out_path
