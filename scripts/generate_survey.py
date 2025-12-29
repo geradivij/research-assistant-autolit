@@ -10,8 +10,10 @@ from src.autolit.multi_paper_agents import run_survey_pipeline
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate a mini survey from multiple paper summaries.")
-    parser.add_argument("--topic", type=str, required=True, help="Topic string to search/compare papers for")
+    parser = argparse.ArgumentParser(description="Generate survey")
+    parser.add_argument("--topic", required=True, help="Topic to generate the survey for")
+    # add this line to accept --out / -o
+    parser.add_argument("--out", "-o", default="outputs/surveys", help="Output directory for survey markdown")
     parser.add_argument("--top_k", type=int, default=3, help="Number of papers to select")
     parser.add_argument("--summaries_dir", type=str, default="outputs/summaries", help="Where Phase 2 summaries live")
     parser.add_argument("--surveys_dir", type=str, default="outputs/surveys", help="Where to write the Markdown survey")
