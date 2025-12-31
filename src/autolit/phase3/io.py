@@ -63,6 +63,7 @@ def load_all_summaries(summaries_dir: str) -> List[PaperSummary]:
     if not papers:
         raise RuntimeError("No summaries found. Did you run Phase 2?")
 
+    print(f"Loaded {len(papers)} summaries from {summaries_dir}")
     return papers
 
 
