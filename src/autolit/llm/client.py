@@ -25,6 +25,7 @@ def chat(
 
     response = llm.invoke(
         messages,
+        format="json",
         temperature=temperature,
     )
 
