@@ -1,12 +1,16 @@
-from langchain_community.chat_models import ChatOllama
+import os
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
 
-def get_llm(model_name: str = "llama3", temperature: float = 0.2):
+load_dotenv()
+
+def get_llm(model_name: str = "llama-3.3-70b-versatile", temperature: float = 0.2):
     """
-    Returns a configured LangChain ChatOllama instance.
-    Central place to tweak model, temperature, etc.
+    Returns a configured LangChain ChatGroq instance.
+    Reads GROQ_API_KEY from environment / .env file.
     """
-    llm = ChatOllama(
+    return ChatGroq(
         model=model_name,
         temperature=temperature,
+        api_key=os.environ.get("GROQ_API_KEY"),
     )
-    return llm

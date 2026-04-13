@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# Secrets
+.env
+
 # Virtual env
 .venv/
 
@@ -13,3 +16,4 @@ outputs/
 # VSCode / IDE
 .vscode/
 .idea/
+.gstack/

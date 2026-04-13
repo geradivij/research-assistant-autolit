@@ -26,7 +26,7 @@ from pathlib import Path
 import json
 
 from pydantic import BaseModel, Field, ValidationError
-from langchain_ollama import ChatOllama
+from src.llm.llama_client import get_llm
 
 from .vector_store import FaissVectorStore
 from .rag_query import (
@@ -158,11 +158,8 @@ def _retrieve_context_for_field(
 #  LLM Helpers
 # ----------------------------
 
-def _get_llm(model_name: str = "llama3") -> ChatOllama:
-    return ChatOllama(
-        model=model_name,
-        temperature=0.2,
-    )
+def _get_llm(model_name: str = "llama-3.3-70b-versatile"):
+    return get_llm(model_name=model_name, temperature=0.2)
 
 
 def _ask_field_llm(field: str, context: str, model_name: str) -> str:
@@ -237,7 +234,7 @@ def _parse_list_field(text: str) -> List[str]:
 
 def summarize_paper_structured(
     paper_id: str,
-    model_name: str = "llama3",
+    model_name: str = "llama-3.3-70b-versatile",
 ) -> PaperSummary:
     print(f"[extraction] Loading index & chunks for paper: {paper_id}")
     chunks = _ensure_index_and_chunks(paper_id)

@@ -2,5 +2,10 @@ pymupdf
 sentence-transformers
 faiss-cpu
 langchain
-langchain-ollama
+langchain-groq
+langchain-community
 pydantic>=2
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv

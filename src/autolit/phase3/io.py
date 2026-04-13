@@ -36,25 +36,32 @@ class PaperSummary:
     summary: Dict[str, Any]
 
 
-def load_all_summaries(summaries_dir: str) -> List[PaperSummary]:
-    """Load all JSON summaries from `summaries_dir`.
+def load_all_summaries(
+    summaries_dir: str,
+    paper_ids: List[str] = None,
+) -> List[PaperSummary]:
+    """Load JSON summaries from `summaries_dir`.
 
-    Each file is expected to be named `<paper_id>.json`. Returns a list of
-    `PaperSummary` instances. Raises a RuntimeError when no summaries are
-    found or the directory doesn't exist.
+    If `paper_ids` is provided, only those papers are loaded. Otherwise all
+    summaries in the directory are loaded. Raises a RuntimeError when no
+    summaries are found or the directory doesn't exist.
     """
     papers: List[PaperSummary] = []
 
     if not os.path.isdir(summaries_dir):
         raise RuntimeError(f"Summaries directory does not exist: {summaries_dir}")
 
+    allowed = set(paper_ids) if paper_ids else None
+
     for fname in os.listdir(summaries_dir):
         if not fname.endswith(".json"):
             continue
 
         paper_id = fname.replace(".json", "")
-        path = os.path.join(summaries_dir, fname)
+        if allowed is not None and paper_id not in allowed:
+            continue
 
+        path = os.path.join(summaries_dir, fname)
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 

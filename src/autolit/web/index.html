@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>autolit</title>
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:        #0b0d12;
+      --bg-raised: #10131a;
+      --bg-hover:  #151923;
+      --border:    #1c2030;
+      --border-hi: #2a3050;
+      --text:      #e2e8f0;
+      --text-muted:#64748b;
+      --text-dim:  #334155;
+      --indigo:    #6366f1;
+      --indigo-hi: #818cf8;
+      --green:     #22c55e;
+      --amber:     #f59e0b;
+      --violet:    #a78bfa;
+      --sky:       #38bdf8;
+      --emerald:   #34d399;
+      --red:       #f87171;
+      --radius:    6px;
+      --font:      'Inter', system-ui, -apple-system, sans-serif;
+      --mono:      'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+    }
+    html, body, #root { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::selection { background: rgba(99,102,241,0.3); }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+
+    /* ── Layout shell ── */
+    .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* ── Topbar ── */
+    .topbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 20px; height: 44px; flex-shrink: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .logo { font-size: 15px; font-weight: 700; letter-spacing: -0.5px; color: #fff; }
+    .logo span { color: var(--indigo); }
+    .topbar-sep { flex: 1; }
+    .badge {
+      font-size: 10px; color: var(--text-muted);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 2px 7px; font-family: var(--mono); letter-spacing: 0.02em;
+    }
+
+    /* ── Body layout ── */
+    .body { display: flex; flex: 1; min-height: 0; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 256px; flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-scroll {
+      flex: 1; overflow-y: auto;
+      padding: 14px 12px;
+      display: flex; flex-direction: column; gap: 18px;
+    }
+    .section-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-dim);
+      margin-bottom: 6px; padding: 0 2px;
+    }
+
+    /* Drop zone */
+    .dropzone {
+      border: 1.5px dashed var(--border-hi); border-radius: var(--radius);
+      padding: 18px 12px; text-align: center;
+      color: var(--text-dim); cursor: pointer;
+      background: var(--bg-raised);
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .dropzone:hover, .dropzone.drag-over {
+      border-color: var(--indigo); color: var(--indigo-hi);
+      background: rgba(99,102,241,0.05);
+    }
+    .dropzone-icon { font-size: 20px; margin-bottom: 6px; display: block; }
+    .dropzone-text { font-size: 12px; line-height: 1.5; }
+    .dropzone-sub { font-size: 10px; color: var(--text-dim); margin-top: 3px; }
+
+    /* Paper list */
+    .paper-list { display: flex; flex-direction: column; gap: 2px; }
+    .paper-empty { font-size: 12px; color: var(--text-dim); padding: 4px 4px; }
+    .paper-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; border-radius: var(--radius); cursor: pointer;
+      color: var(--text-muted); transition: background 0.1s, color 0.1s;
+      min-width: 0;
+    }
+    .paper-item:hover { background: var(--bg-hover); color: var(--text); }
+    .paper-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .paper-dot.indexed    { background: var(--green); }
+    .paper-dot.processing { background: var(--amber); animation: pulse-dot 1.2s ease infinite; }
+    .paper-dot.error      { background: var(--red); }
+    .paper-dot.unknown    { background: var(--border-hi); }
+    @keyframes pulse-dot {
+      0%,100% { opacity: 1; box-shadow: 0 0 0 2px rgba(245,158,11,0.2); }
+      50%      { opacity: 0.7; box-shadow: 0 0 0 4px rgba(245,158,11,0.05); }
+    }
+    .paper-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .paper-status { font-size: 10px; color: var(--text-dim); flex-shrink: 0; }
+
+    /* Survey form */
+    .survey-form { display: flex; flex-direction: column; gap: 7px; }
+    .topic-input {
+      background: var(--bg-raised); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 8px 10px;
+      color: var(--text); font-size: 12px; font-family: var(--font);
+      outline: none; width: 100%; resize: none;
+      transition: border-color 0.15s;
+    }
+    .topic-input:focus { border-color: var(--indigo); }
+    .topic-input::placeholder { color: var(--text-dim); }
+    .run-btn {
+      background: var(--indigo); color: #fff;
+      border: none; border-radius: var(--radius);
+      padding: 8px 12px; font-size: 12px; font-weight: 600;
+      cursor: pointer; width: 100%; transition: background 0.15s;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .run-btn:hover:not(:disabled) { background: var(--indigo-hi); }
+    .run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .run-btn .spinner {
+      width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .top-k-row { display: flex; align-items: center; gap: 8px; }
+    .top-k-label { font-size: 11px; color: var(--text-muted); flex: 1; }
+    .top-k-input {
+      width: 44px; text-align: center;
+      background: var(--bg-raised); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 4px 6px;
+      color: var(--text); font-size: 12px; outline: none;
+    }
+    .top-k-input:focus { border-color: var(--indigo); }
+
+    /* ── Main area ── */
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Pipeline bar */
+    .pipeline-bar {
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px; height: 40px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 0;
+      background: var(--bg);
+    }
+    .stage {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 11px; color: var(--text-dim);
+      padding: 0 14px; white-space: nowrap;
+      transition: color 0.2s;
+    }
+    .stage:first-child { padding-left: 0; }
+    .stage-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--border-hi); flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .stage.done .stage-dot   { background: var(--green); }
+    .stage.done              { color: var(--text-muted); }
+    .stage.active .stage-dot {
+      background: var(--indigo);
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.2);
+      animation: pulse-stage 1.2s ease infinite;
+    }
+    .stage.active { color: #c7d2fe; }
+    @keyframes pulse-stage {
+      0%,100% { box-shadow: 0 0 0 3px rgba(99,102,241,0.2); }
+      50%      { box-shadow: 0 0 0 5px rgba(99,102,241,0.05); }
+    }
+    .stage-arrow { color: var(--border-hi); font-size: 12px; margin: 0 -6px; }
+
+    /* Content split */
+    .content { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+
+    /* Survey pane */
+    .survey-pane {
+      padding: 32px 40px; overflow-y: auto;
+      border-right: 1px solid var(--border);
+    }
+    .survey-placeholder {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%; color: var(--text-dim); text-align: center; gap: 10px;
+    }
+    .survey-placeholder-icon { font-size: 32px; opacity: 0.4; }
+    .survey-placeholder-text { font-size: 13px; max-width: 260px; line-height: 1.6; }
+
+    /* Markdown output */
+    .survey-header { margin-bottom: 24px; }
+    .survey-title { font-size: 22px; font-weight: 700; color: #f1f5f9; letter-spacing: -0.5px; line-height: 1.3; margin-bottom: 4px; }
+    .survey-meta { font-size: 11px; color: var(--text-dim); }
+    .survey-actions { margin-top: 12px; display: flex; gap: 8px; }
+    .action-btn {
+      font-size: 11px; color: var(--text-muted);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 4px 10px; background: transparent; cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .action-btn:hover { border-color: var(--border-hi); color: var(--text); }
+
+    /* Rendered markdown styles */
+    .md-body { font-size: 13px; line-height: 1.75; color: #94a3b8; }
+    .md-body h1 { font-size: 20px; font-weight: 700; color: #f1f5f9; margin: 28px 0 10px; letter-spacing: -0.3px; }
+    .md-body h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--indigo-hi); margin: 24px 0 10px; }
+    .md-body h3 { font-size: 13px; font-weight: 600; color: #c7d2fe; margin: 18px 0 8px; }
+    .md-body p  { margin-bottom: 12px; }
+    .md-body ul, .md-body ol { margin: 0 0 12px 20px; }
+    .md-body li { margin-bottom: 4px; }
+    .md-body strong { color: #e2e8f0; font-weight: 600; }
+    .md-body em { color: #94a3b8; font-style: italic; }
+    .md-body code {
+      background: var(--bg-raised); border: 1px solid var(--border);
+      border-radius: 3px; padding: 1px 5px;
+      font-family: var(--mono); font-size: 11px; color: var(--emerald);
+    }
+    .md-body pre {
+      background: var(--bg-raised); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px 16px; overflow-x: auto;
+      margin-bottom: 14px;
+    }
+    .md-body pre code { background: none; border: none; padding: 0; color: #94a3b8; font-size: 12px; }
+    .md-body table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 12px; }
+    .md-body th {
+      text-align: left; color: var(--text-muted);
+      border-bottom: 1px solid var(--border); padding: 6px 10px 8px;
+      font-weight: 500;
+    }
+    .md-body td { padding: 7px 10px; color: #94a3b8; border-bottom: 1px solid var(--bg-raised); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tr:hover td { background: var(--bg-raised); }
+    .md-body blockquote {
+      border-left: 3px solid var(--indigo); padding-left: 14px;
+      color: var(--text-muted); font-style: italic; margin-bottom: 12px;
+    }
+    .md-body hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+    .md-body a { color: var(--indigo-hi); text-decoration: none; }
+    .md-body a:hover { text-decoration: underline; }
+
+    /* Log pane */
+    .log-pane {
+      display: flex; flex-direction: column;
+      background: #080a0f; overflow: hidden;
+    }
+    .log-header {
+      padding: 10px 14px 8px; border-bottom: 1px solid var(--border);
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-dim); flex-shrink: 0;
+    }
+    .log-scroll { flex: 1; overflow-y: auto; padding: 8px 0; }
+    .log-empty { padding: 16px 14px; font-size: 12px; color: var(--text-dim); }
+    .log-entry {
+      display: flex; gap: 10px; padding: 4px 14px;
+      border-left: 2px solid transparent; margin-left: 0;
+      transition: background 0.1s;
+    }
+    .log-entry:hover { background: rgba(255,255,255,0.02); }
+    .log-entry.pipeline   { border-left-color: var(--border-hi); }
+    .log-entry.selector   { border-left-color: var(--amber); }
+    .log-entry.comparator { border-left-color: var(--violet); }
+    .log-entry.writer     { border-left-color: var(--sky); }
+    .log-entry.extract    { border-left-color: var(--emerald); }
+    .log-entry.error      { border-left-color: var(--red); }
+    .log-time { font-size: 10px; color: var(--text-dim); font-family: var(--mono); flex-shrink: 0; padding-top: 1px; }
+    .log-body { font-size: 11px; color: var(--text-dim); line-height: 1.55; }
+    .log-tag {
+      font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; border-radius: 3px; padding: 1px 5px;
+      margin-right: 5px; display: inline-block; vertical-align: middle;
+    }
+    .log-tag.pipeline   { background: rgba(100,116,139,0.15); color: var(--text-muted); }
+    .log-tag.selector   { background: rgba(245,158,11,0.12);  color: var(--amber); }
+    .log-tag.comparator { background: rgba(167,139,250,0.12); color: var(--violet); }
+    .log-tag.writer     { background: rgba(56,189,248,0.12);  color: var(--sky); }
+    .log-tag.extract    { background: rgba(52,211,153,0.12);  color: var(--emerald); }
+    .log-tag.error      { background: rgba(248,113,113,0.12); color: var(--red); }
+    .log-msg { color: #64748b; }
+
+    /* Error banner */
+    .error-banner {
+      background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.2);
+      border-radius: var(--radius); padding: 10px 14px; margin: 16px 40px;
+      font-size: 12px; color: var(--red);
+    }
+
+    /* Hidden file input */
+    #file-input { display: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Unregister any stale service workers (e.g. from other apps on localhost) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(regs => {
+        regs.forEach(r => r.unregister())
+      })
+    }
+  </script>
+
+  <script type="module">
+    import React, { useState, useEffect, useRef, useCallback } from 'https://esm.sh/react@18.3.1'
+    import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client'
+    import htm from 'https://esm.sh/htm@3.1.1'
+    import MarkdownIt from 'https://esm.sh/markdown-it@14.1.0'
+
+    const html = htm.bind(React.createElement)
+    const mdParser = new MarkdownIt({ html: false, linkify: true, typographer: true })
+
+    // ── Agent → stage index mapping ──
+    const AGENT_STAGE = { selector: 2, comparator: 3, writer: 4 }
+    const STAGE_NAMES = ['Ingest', 'Extract', 'Select', 'Compare', 'Write']
+
+    // ── Helpers ──
+    function fmtTime(iso) {
+      if (!iso) return '--'
+      const d = new Date(iso)
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    }
+
+    function downloadText(content, filename) {
+      const blob = new Blob([content], { type: 'text/markdown' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename; a.click()
+      URL.revokeObjectURL(url)
+    }
+
+    // ── Topbar ──
+    function Topbar() {
+      return html`
+        <div class="topbar">
+          <div class="logo">auto<span>lit</span></div>
+          <div class="topbar-sep"></div>
+          <div class="badge">local · llama3 · faiss</div>
+        </div>
+      `
+    }
+
+    // ── Drop Zone ──
+    function DropZone({ onFile }) {
+      const [dragOver, setDragOver] = useState(false)
+      const inputRef = useRef(null)
+
+      function handleDrop(e) {
+        e.preventDefault(); setDragOver(false)
+        const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf'))
+        files.forEach(onFile)
+      }
+
+      function handleChange(e) {
+        Array.from(e.target.files || []).forEach(onFile)
+        e.target.value = ''
+      }
+
+      return html`
+        <div>
+          <div class="section-label">Papers</div>
+          <div
+            class=${'dropzone' + (dragOver ? ' drag-over' : '')}
+            onDragOver=${e => { e.preventDefault(); setDragOver(true) }}
+            onDragLeave=${() => setDragOver(false)}
+            onDrop=${handleDrop}
+            onClick=${() => inputRef.current?.click()}
+          >
+            <span class="dropzone-icon">⊕</span>
+            <div class="dropzone-text">Drop PDFs here</div>
+            <div class="dropzone-sub">or click to browse</div>
+          </div>
+          <input
+            ref=${inputRef}
+            id="file-input" type="file" accept=".pdf" multiple
+            onChange=${handleChange}
+          />
+        </div>
+      `
+    }
+
+    // ── Paper list ──
+    function PaperList({ papers }) {
+      if (!papers.length) {
+        return html`
+          <div class="paper-list">
+            <div class="paper-empty">No papers yet — drop a PDF above.</div>
+          </div>
+        `
+      }
+      return html`
+        <div class="paper-list">
+          ${papers.map(p => html`
+            <div class="paper-item" key=${p.paper_id} title=${p.error || p.paper_id}>
+              <div class=${'paper-dot ' + (p.status || 'unknown')}></div>
+              <div class="paper-name">${p.paper_id}</div>
+              <div class="paper-status">
+                ${p.status === 'processing' ? '…' : p.status === 'error' ? '✕' : ''}
+              </div>
+            </div>
+          `)}
+        </div>
+      `
+    }
+
+    // ── Survey form ──
+    function SurveyForm({ isRunning, onRun }) {
+      const [topic, setTopic] = useState('')
+      const [topK, setTopK] = useState(3)
+
+      function submit(e) {
+        e.preventDefault()
+        if (topic.trim() && !isRunning) onRun(topic.trim(), topK)
+      }
+
+      return html`
+        <form onSubmit=${submit}>
+          <div class="section-label">Generate Survey</div>
+          <div class="survey-form">
+            <textarea
+              class="topic-input"
+              rows="2"
+              placeholder="e.g. differential privacy in language models"
+              value=${topic}
+              onInput=${e => setTopic(e.target.value)}
+              disabled=${isRunning}
+            ></textarea>
+            <div class="top-k-row">
+              <span class="top-k-label">Papers to select</span>
+              <input
+                type="number" class="top-k-input"
+                min="1" max="10" value=${topK}
+                onInput=${e => setTopK(Number(e.target.value))}
+                disabled=${isRunning}
+              />
+            </div>
+            <button type="submit" class="run-btn" disabled=${isRunning || !topic.trim()}>
+              ${isRunning
+                ? html`<div class="spinner"></div><span>Running…</span>`
+                : html`<span>Run Pipeline →</span>`}
+            </button>
+          </div>
+        </form>
+      `
+    }
+
+    // ── Pipeline status bar ──
+    function PipelineBar({ stage }) {
+      // stage: -1=idle, 0..4=active index, 5=all done
+      function stageClass(i) {
+        if (stage === 5) return 'stage done'
+        if (stage === -1) return 'stage'
+        if (i < stage) return 'stage done'
+        if (i === stage) return 'stage active'
+        return 'stage'
+      }
+      return html`
+        <div class="pipeline-bar">
+          ${STAGE_NAMES.map((name, i) => html`
+            <${React.Fragment} key=${name}>
+              <div class=${stageClass(i)}>
+                <div class="stage-dot"></div>
+                ${name}
+              </div>
+              ${i < STAGE_NAMES.length - 1 && html`<div class="stage-arrow">›</div>`}
+            </${React.Fragment}>
+          `)}
+        </div>
+      `
+    }
+
+    // ── Survey pane ──
+    function SurveyPane({ topic, markdown, isRunning, error }) {
+      const rendered = markdown ? mdParser.render(markdown) : ''
+
+      if (error && !markdown) {
+        return html`
+          <div class="survey-pane">
+            <div class="error-banner">Pipeline error: ${error}</div>
+          </div>
+        `
+      }
+
+      if (!markdown) {
+        return html`
+          <div class="survey-pane">
+            <div class="survey-placeholder">
+              <div class="survey-placeholder-icon">◎</div>
+              <div class="survey-placeholder-text">
+                ${isRunning
+                  ? 'Generating survey — watch the log →'
+                  : 'Drop PDFs, enter a topic, and click Run Pipeline.'}
+              </div>
+            </div>
+          </div>
+        `
+      }
+
+      function exportMd() {
+        const slug = topic.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+        downloadText(markdown, `${slug}_survey.md`)
+      }
+
+      return html`
+        <div class="survey-pane">
+          <div class="survey-header">
+            <div class="survey-title">${topic}</div>
+            <div class="survey-meta">Generated just now · autolit</div>
+            <div class="survey-actions">
+              <button class="action-btn" onClick=${exportMd}>⬇ Export Markdown</button>
+            </div>
+          </div>
+          <div class="md-body" dangerouslySetInnerHTML=${{ __html: rendered }}></div>
+        </div>
+      `
+    }
+
+    // ── Log pane ──
+    function LogPane({ entries }) {
+      const bottomRef = useRef(null)
+
+      useEffect(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      }, [entries.length])
+
+      return html`
+        <div class="log-pane">
+          <div class="log-header">Pipeline log</div>
+          <div class="log-scroll">
+            ${entries.length === 0
+              ? html`<div class="log-empty">Events will appear here when a pipeline runs.</div>`
+              : entries.map((e, i) => html`
+                  <div class=${'log-entry ' + (e.agent || 'pipeline')} key=${i}>
+                    <div class="log-time">${fmtTime(e.timestamp)}</div>
+                    <div class="log-body">
+                      <span class=${'log-tag ' + (e.agent || 'pipeline')}>${e.agent || 'pipeline'}</span>
+                      <span class="log-msg">${e.message}</span>
+                    </div>
+                  </div>
+                `)}
+            <div ref=${bottomRef}></div>
+          </div>
+        </div>
+      `
+    }
+
+    // ── Root App ──
+    function App() {
+      const [papers, setPapers] = useState([])
+      const [isRunning, setIsRunning] = useState(false)
+      const [stage, setStage] = useState(-1)
+      const [logEntries, setLogEntries] = useState([])
+      const [surveyMd, setSurveyMd] = useState('')
+      const [surveyTopic, setSurveyTopic] = useState('')
+      const [pipelineError, setPipelineError] = useState(null)
+
+      // ── Poll papers ──
+      const fetchPapers = useCallback(async () => {
+        try {
+          const res = await fetch('/api/papers')
+          if (res.ok) setPapers(await res.json())
+        } catch (_) {}
+      }, [])
+
+      useEffect(() => {
+        fetchPapers()
+        const interval = setInterval(fetchPapers, 3000)
+        return () => clearInterval(interval)
+      }, [])
+
+      // ── Upload ──
+      async function handleFile(file) {
+        const form = new FormData()
+        form.append('file', file)
+        try {
+          const res = await fetch('/api/ingest', { method: 'POST', body: form })
+          if (res.ok) {
+            await fetchPapers()
+          } else {
+            const err = await res.json().catch(() => ({}))
+            console.error('Ingest failed:', err)
+          }
+        } catch (e) {
+          console.error('Upload error:', e)
+        }
+      }
+
+      // ── Run survey pipeline ──
+      async function handleRun(topic, topK) {
+        setIsRunning(true)
+        setStage(2)  // start at Select (Extract is already done)
+        setLogEntries([])
+        setSurveyMd('')
+        setSurveyTopic(topic)
+        setPipelineError(null)
+
+        try {
+          const res = await fetch('/api/survey/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topic, top_k: topK }),
+          })
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}))
+            throw new Error(err.detail || `HTTP ${res.status}`)
+          }
+
+          const reader = res.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ''
+
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split('\n')
+            buffer = lines.pop()  // keep incomplete line
+
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              let event
+              try { event = JSON.parse(line.slice(6)) } catch { continue }
+
+              if (event.type === 'log') {
+                setLogEntries(prev => [...prev, event])
+                // Advance stage
+                const s = AGENT_STAGE[event.agent]
+                if (s !== undefined) setStage(s)
+              } else if (event.type === 'result') {
+                setSurveyMd(event.markdown || '')
+                setStage(5)
+                setLogEntries(prev => [...prev, {
+                  type: 'log', agent: 'pipeline',
+                  message: 'Survey complete.',
+                  timestamp: event.timestamp,
+                }])
+              } else if (event.type === 'error') {
+                setPipelineError(event.message)
+                setLogEntries(prev => [...prev, { ...event, agent: 'error' }])
+              }
+            }
+          }
+        } catch (e) {
+          setPipelineError(e.message)
+          setLogEntries(prev => [...prev, {
+            type: 'error', agent: 'error',
+            message: e.message,
+            timestamp: new Date().toISOString(),
+          }])
+        } finally {
+          setIsRunning(false)
+        }
+      }
+
+      return html`
+        <div class="app">
+          <${Topbar} />
+          <div class="body">
+            <div class="sidebar">
+              <div class="sidebar-scroll">
+                <${DropZone} onFile=${handleFile} />
+                <${PaperList} papers=${papers} />
+                <${SurveyForm} isRunning=${isRunning} onRun=${handleRun} />
+              </div>
+            </div>
+            <div class="main">
+              <${PipelineBar} stage=${stage} />
+              <div class="content">
+                <${SurveyPane}
+                  topic=${surveyTopic}
+                  markdown=${surveyMd}
+                  isRunning=${isRunning}
+                  error=${pipelineError}
+                />
+                <${LogPane} entries=${logEntries} />
+              </div>
+            </div>
+          </div>
+        </div>
+      `
+    }
+
+    // ── Mount ──
+    createRoot(document.getElementById('root')).render(html`<${App} />`)
+  </script>
+</body>
+</html>

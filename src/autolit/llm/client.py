@@ -1,10 +1,6 @@
-# src/autolit/llm/client.py
-
-from typing import List, Dict
+from typing import List, Dict, Optional
 from src.llm.llama_client import get_llm
 
-# Create a shared Llama instance (or recreate each call — both ok)
-# But keeping a single instance is cleaner.
 llm = get_llm()
 
 def chat(
@@ -12,7 +8,7 @@ def chat(
     temperature: float = 0.2,
 ) -> str:
     """
-    Universal Llama chat helper.
+    Universal chat helper using Groq.
 
     Accepts a list of messages:
         [
@@ -22,13 +18,5 @@ def chat(
 
     Returns the text content of the model's reply.
     """
-
-    response = llm.invoke(
-        messages,
-        format="json",
-        temperature=temperature,
-    )
-
-    # LangChain ChatOllama returns a BaseMessage
-    # with `.content` attribute.
+    response = llm.invoke(messages)
     return response.content

@@ -10,7 +10,6 @@ End-to-end RAG for a *single* PDF:
 """
 
 from __future__ import annotations
-import ollama
 
 
 import argparse
@@ -107,36 +106,23 @@ Answer in 3-5 sentences, concise and precise.
 
 def call_llm(prompt: str) -> str:
     """
-    Call a local Llama model running via Ollama.
+    Call the LLM (Groq) for a RAG query about a single paper.
     """
-
-    response = ollama.chat(
-        model="llama3",   # or "llama3.2", or whatever you installed
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an AI assistant that answers questions about a single academic paper."
-                    "Use the context below to infer the answer as best as you can."
-                    "If the context truly does not provide enough information, honestly say you don't know,"
-                    "but first try to infer it from the described goals, methods, and results."
-                ),
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ]
-    )
-
-    # response structure:
-    # {
-    #   'model': 'llama3.1',
-    #   'created_at': '...',
-    #   'message': {'role': 'assistant', 'content': '...'},
-    #   ...
-    # }
-    return response["message"]["content"]
+    from src.llm.llama_client import get_llm
+    llm = get_llm()
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an AI assistant that answers questions about a single academic paper. "
+                "Use the context below to infer the answer as best as you can. "
+                "If the context truly does not provide enough information, honestly say you don't know, "
+                "but first try to infer it from the described goals, methods, and results."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    return llm.invoke(messages).content
 
 
 

@@ -1,10 +1,8 @@
 """
 Comparator agent for Phase 3.
 
-Produces a JSON comparison table and a natural-language critique. The
-agent expects the model to return two delimited blocks: BEGIN_JSON/END_JSON
-and BEGIN_CRITIQUE/END_CRITIQUE. The JSON block is parsed using the
-project's parsing and repair helpers with two repair attempts.
+Produces a JSON comparison table and a natural-language critique.
+Returns pure JSON with two keys: "comparison_table" and "critique".
 """
 from typing import List, Dict, Any, Tuple
 import json
@@ -15,12 +13,7 @@ from src.autolit.llm.client import chat
 
 
 def compare_papers(papers: List[PaperSummary]) -> Tuple[List[Dict[str, Any]], str]:
-    """Compare `papers` and return (comparison_table, critique).
-
-    The comparison_table is a list of dicts describing each paper. The
-    critique is a string with the agent's analysis. Raises ValueError for
-    empty input and RuntimeError for malformed comparator output.
-    """
+    """Compare `papers` and return (comparison_table, critique)."""
     if not papers:
         raise ValueError("compare_papers called with empty paper list.")
 
@@ -32,21 +25,18 @@ def compare_papers(papers: List[PaperSummary]) -> Tuple[List[Dict[str, Any]], st
 
     system_prompt = (
         "You are a Comparator Agent for machine learning research papers.\n"
-        "You will receive a list of paper summaries.\n\n"
-        "You must output EXACTLY TWO BLOCKS in this order:\n"
-        "1) A valid JSON object containing ONLY the comparison table\n"
-        "2) A natural language critique\n\n"
-        "FORMAT:\n"
-        "BEGIN_JSON\n"
-        "{ ... }\n"
-        "END_JSON\n\n"
-        "BEGIN_CRITIQUE\n"
-        "(write critique here)\n"
-        "END_CRITIQUE\n\n"
+        "Given a list of paper summaries, return a JSON object with exactly two keys:\n\n"
+        '{\n'
+        '  "comparison_table": [\n'
+        '    {"paper_id": "...", "task": "...", "approach": "...", "key_results": "...", "strengths": "...", "weaknesses": "..."},\n'
+        '    ...\n'
+        '  ],\n'
+        '  "critique": "A paragraph comparing and contrasting the papers."\n'
+        '}\n\n'
         "Rules:\n"
-        "- The JSON block MUST be strictly valid JSON.\n"
-        "- Do NOT put the critique inside JSON.\n"
-        "- Do NOT output anything outside these blocks.\n"
+        "- Output ONLY valid JSON. No markdown, no extra text.\n"
+        "- One entry in comparison_table per paper.\n"
+        "- The critique key must be a single string (not an object).\n"
     )
 
     messages = [
@@ -56,18 +46,14 @@ def compare_papers(papers: List[PaperSummary]) -> Tuple[List[Dict[str, Any]], st
 
     raw = chat(messages, temperature=0.1)
 
-    # Extract the delimited blocks
-    json_block = contracts._extract_between(raw, "BEGIN_JSON", "END_JSON")
-    critique_block = contracts._extract_between(raw, "BEGIN_CRITIQUE", "END_CRITIQUE", allow_missing_end=True)
-
-    # Normalize and parse JSON using the central parser with repair policy
-    json_block = contracts._strip_code_fences(json_block)
-    # parse_or_repair_json will attempt repairs up to the configured attempts
-    data = contracts.parse_or_repair_json(json_block, max_attempts=2)
+    data = contracts.parse_or_repair_json(raw, max_attempts=2)
 
     table = data.get("comparison_table", [])
     if not isinstance(table, list):
         raise RuntimeError("'comparison_table' is not a list in comparator output.")
 
-    critique = critique_block.strip()
+    critique = data.get("critique", "")
+    if not isinstance(critique, str):
+        critique = str(critique)
+
     return table, critique
