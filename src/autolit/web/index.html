@@ -108,9 +108,11 @@
       min-width: 0;
     }
     .paper-item:hover { background: var(--bg-hover); color: var(--text); }
+    .paper-item.excluded { opacity: 0.48; }
     .paper-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .paper-dot.indexed    { background: var(--green); }
     .paper-dot.processing { background: var(--amber); animation: pulse-dot 1.2s ease infinite; }
+    .paper-dot.queued     { background: var(--sky); }
     .paper-dot.error      { background: var(--red); }
     .paper-dot.unknown    { background: var(--border-hi); }
     @keyframes pulse-dot {
@@ -118,7 +120,17 @@
       50%      { opacity: 0.7; box-shadow: 0 0 0 4px rgba(245,158,11,0.05); }
     }
     .paper-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .paper-copy { min-width: 0; flex: 1; }
+    .paper-error { font-size: 10px; color: var(--red); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .paper-status { font-size: 10px; color: var(--text-dim); flex-shrink: 0; }
+    .paper-action {
+      width: 20px; height: 20px; border-radius: 6px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--text-dim); cursor: pointer; flex-shrink: 0;
+      font-size: 12px; line-height: 18px;
+    }
+    .paper-action:hover { border-color: var(--border-hi); color: var(--text); }
+    .upload-error { font-size: 11px; color: var(--red); padding: 4px 2px 0; }
 
     /* Survey form */
     .survey-form { display: flex; flex-direction: column; gap: 7px; }
@@ -155,6 +167,7 @@
       color: var(--text); font-size: 12px; outline: none;
     }
     .top-k-input:focus { border-color: var(--indigo); }
+    .selection-count { font-size: 10px; color: var(--text-dim); }
 
     /* ── Main area ── */
     .main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -360,18 +373,19 @@
     }
 
     // ── Drop Zone ──
-    function DropZone({ onFile }) {
+    function DropZone({ onFile, error }) {
       const [dragOver, setDragOver] = useState(false)
       const inputRef = useRef(null)
 
-      function handleDrop(e) {
+      async function handleDrop(e) {
         e.preventDefault(); setDragOver(false)
-        const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf'))
-        files.forEach(onFile)
+        const files = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.pdf'))
+        for (const file of files) await onFile(file)
       }
 
-      function handleChange(e) {
-        Array.from(e.target.files || []).forEach(onFile)
+      async function handleChange(e) {
+        const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf'))
+        for (const file of files) await onFile(file)
         e.target.value = ''
       }
 
@@ -391,16 +405,19 @@
           </div>
           <input
             ref=${inputRef}
-            id="file-input" type="file" accept=".pdf" multiple
+            id="file-input" type="file" accept=".pdf,.PDF,application/pdf" multiple
             onChange=${handleChange}
           />
+          ${error && html`<div class="upload-error">${error}</div>`}
         </div>
       `
     }
 
     // ── Paper list ──
-    function PaperList({ papers }) {
-      if (!papers.length) {
+    function PaperList({ papers, excludedPaperIds, onTogglePaper }) {
+      const visiblePapers = papers.filter(p => p.status !== 'error')
+
+      if (!visiblePapers.length) {
         return html`
           <div class="paper-list">
             <div class="paper-empty">No papers yet — drop a PDF above.</div>
@@ -409,27 +426,44 @@
       }
       return html`
         <div class="paper-list">
-          ${papers.map(p => html`
-            <div class="paper-item" key=${p.paper_id} title=${p.error || p.paper_id}>
+          ${visiblePapers.map(p => {
+            const isExcluded = excludedPaperIds.has(p.paper_id)
+            const canToggle = p.status === 'indexed'
+            return html`
+            <div class=${'paper-item' + (isExcluded ? ' excluded' : '')} key=${p.paper_id} title=${p.error || p.paper_id}>
               <div class=${'paper-dot ' + (p.status || 'unknown')}></div>
-              <div class="paper-name">${p.paper_id}</div>
+              <div class="paper-copy">
+                <div class="paper-name">${p.paper_id}</div>
+                ${isExcluded && html`<div class="paper-error">Excluded from surveys</div>`}
+                ${p.status === 'error' && p.error && html`<div class="paper-error">${p.error}</div>`}
+              </div>
               <div class="paper-status">
+                ${p.status === 'queued' ? 'queued' : ''}
                 ${p.status === 'processing' ? '…' : p.status === 'error' ? '✕' : ''}
               </div>
+              ${canToggle && html`
+                <button
+                  class="paper-action"
+                  type="button"
+                  title=${isExcluded ? 'Include in surveys' : 'Exclude from surveys'}
+                  onClick=${() => onTogglePaper(p.paper_id)}
+                >${isExcluded ? '+' : 'x'}</button>
+              `}
             </div>
-          `)}
+          `}
+          )}
         </div>
       `
     }
 
     // ── Survey form ──
-    function SurveyForm({ isRunning, onRun }) {
+    function SurveyForm({ isRunning, onRun, includedCount, indexedCount }) {
       const [topic, setTopic] = useState('')
       const [topK, setTopK] = useState(3)
 
       function submit(e) {
         e.preventDefault()
-        if (topic.trim() && !isRunning) onRun(topic.trim(), topK)
+        if (topic.trim() && !isRunning && includedCount > 0) onRun(topic.trim(), topK)
       }
 
       return html`
@@ -453,7 +487,8 @@
                 disabled=${isRunning}
               />
             </div>
-            <button type="submit" class="run-btn" disabled=${isRunning || !topic.trim()}>
+            <div class="selection-count">${includedCount} of ${indexedCount} indexed papers included</div>
+            <button type="submit" class="run-btn" disabled=${isRunning || !topic.trim() || includedCount === 0}>
               ${isRunning
                 ? html`<div class="spinner"></div><span>Running…</span>`
                 : html`<span>Run Pipeline →</span>`}
@@ -572,6 +607,19 @@
       const [surveyMd, setSurveyMd] = useState('')
       const [surveyTopic, setSurveyTopic] = useState('')
       const [pipelineError, setPipelineError] = useState(null)
+      const [uploadError, setUploadError] = useState(null)
+      const [excludedPaperIds, setExcludedPaperIds] = useState(() => {
+        try {
+          return new Set(JSON.parse(localStorage.getItem('autolit.excludedPaperIds') || '[]'))
+        } catch (_) {
+          return new Set()
+        }
+      })
+
+      const indexedPapers = papers.filter(p => p.status === 'indexed')
+      const includedPaperIds = indexedPapers
+        .filter(p => !excludedPaperIds.has(p.paper_id))
+        .map(p => p.paper_id)
 
       // ── Poll papers ──
       const fetchPapers = useCallback(async () => {
@@ -587,8 +635,22 @@
         return () => clearInterval(interval)
       }, [])
 
+      useEffect(() => {
+        localStorage.setItem('autolit.excludedPaperIds', JSON.stringify(Array.from(excludedPaperIds)))
+      }, [excludedPaperIds])
+
+      function togglePaper(paperId) {
+        setExcludedPaperIds(prev => {
+          const next = new Set(prev)
+          if (next.has(paperId)) next.delete(paperId)
+          else next.add(paperId)
+          return next
+        })
+      }
+
       // ── Upload ──
       async function handleFile(file) {
+        setUploadError(null)
         const form = new FormData()
         form.append('file', file)
         try {
@@ -597,15 +659,21 @@
             await fetchPapers()
           } else {
             const err = await res.json().catch(() => ({}))
+            setUploadError(err.detail || `Upload failed: HTTP ${res.status}`)
             console.error('Ingest failed:', err)
           }
         } catch (e) {
+          setUploadError(e.message || 'Upload failed.')
           console.error('Upload error:', e)
         }
       }
 
       // ── Run survey pipeline ──
       async function handleRun(topic, topK) {
+        if (includedPaperIds.length === 0) {
+          setPipelineError('Include at least one indexed paper before running the pipeline.')
+          return
+        }
         setIsRunning(true)
         setStage(2)  // start at Select (Extract is already done)
         setLogEntries([])
@@ -617,7 +685,7 @@
           const res = await fetch('/api/survey/stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ topic, top_k: topK }),
+            body: JSON.stringify({ topic, top_k: topK, paper_ids: includedPaperIds }),
           })
 
           if (!res.ok) {
@@ -679,9 +747,18 @@
           <div class="body">
             <div class="sidebar">
               <div class="sidebar-scroll">
-                <${DropZone} onFile=${handleFile} />
-                <${PaperList} papers=${papers} />
-                <${SurveyForm} isRunning=${isRunning} onRun=${handleRun} />
+                <${DropZone} onFile=${handleFile} error=${uploadError} />
+                <${PaperList}
+                  papers=${papers}
+                  excludedPaperIds=${excludedPaperIds}
+                  onTogglePaper=${togglePaper}
+                />
+                <${SurveyForm}
+                  isRunning=${isRunning}
+                  onRun=${handleRun}
+                  includedCount=${includedPaperIds.length}
+                  indexedCount=${indexedPapers.length}
+                />
               </div>
             </div>
             <div class="main">

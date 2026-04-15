@@ -14,6 +14,7 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
@@ -24,6 +25,31 @@ from sentence_transformers import SentenceTransformer
 
 
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+_model_lock = threading.RLock()
+_model_cache: Dict[str, SentenceTransformer] = {}
+
+
+def _get_embedding_model(model_name: str) -> SentenceTransformer:
+    with _model_lock:
+        model = _model_cache.get(model_name)
+        if model is None:
+            model = SentenceTransformer(model_name)
+            _model_cache[model_name] = model
+        return model
+
+
+def _encode_texts(
+    model: SentenceTransformer,
+    texts: List[str],
+    show_progress_bar: bool = False,
+) -> np.ndarray:
+    with _model_lock:
+        return model.encode(
+            texts,
+            convert_to_numpy=True,
+            show_progress_bar=show_progress_bar,
+        )
 
 
 @dataclass
@@ -44,7 +70,7 @@ class FaissVectorStore:
         self.embeddings_dim = embeddings_dim
         self.metadata = metadata
         self.embedding_model_name = embedding_model_name
-        self._model = SentenceTransformer(self.embedding_model_name)
+        self._model = _get_embedding_model(self.embedding_model_name)
 
     @classmethod
     def from_chunks(
@@ -64,8 +90,8 @@ class FaissVectorStore:
             for c in chunks
         ]
 
-        model = SentenceTransformer(embedding_model_name)
-        embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+        model = _get_embedding_model(embedding_model_name)
+        embeddings = _encode_texts(model, texts, show_progress_bar=True)
 
         # normalize for cosine similarity
         faiss.normalize_L2(embeddings)
@@ -140,7 +166,7 @@ class FaissVectorStore:
         """
         Embed a single query string and normalize it.
         """
-        vec = self._model.encode([query], convert_to_numpy=True)
+        vec = _encode_texts(self._model, [query])
         faiss.normalize_L2(vec)
         return vec
 

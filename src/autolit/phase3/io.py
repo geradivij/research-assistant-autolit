@@ -51,7 +51,7 @@ def load_all_summaries(
     if not os.path.isdir(summaries_dir):
         raise RuntimeError(f"Summaries directory does not exist: {summaries_dir}")
 
-    allowed = set(paper_ids) if paper_ids else None
+    allowed = set(paper_ids) if paper_ids is not None else None
 
     for fname in os.listdir(summaries_dir):
         if not fname.endswith(".json"):

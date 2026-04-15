@@ -13,10 +13,11 @@ Static files (the React frontend) are served from src/autolit/web/.
 from __future__ import annotations
 
 import json
+import queue
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -38,6 +39,11 @@ WEB_DIR = Path(__file__).parent / "web"
 
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 
+_manifest_lock = threading.RLock()
+_ingest_queue: queue.Queue[Tuple[str, str]] = queue.Queue()
+_ingest_worker_started = False
+_ingest_worker_lock = threading.Lock()
+
 # ---------------------------------------------------------------------------
 # Manifest helpers
 # ---------------------------------------------------------------------------
@@ -57,14 +63,66 @@ def _save_manifest(manifest: Dict[str, Any]) -> None:
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-def _mark_paper(paper_id: str, status: str, error: Optional[str] = None) -> None:
-    manifest = _load_manifest()
-    manifest[paper_id] = {
-        "status": status,
-        "ingested_at": datetime.now(timezone.utc).isoformat(),
-        "error": error,
-    }
-    _save_manifest(manifest)
+def _mark_paper(
+    paper_id: str,
+    status: str,
+    error: Optional[str] = None,
+    pdf_filename: Optional[str] = None,
+) -> None:
+    with _manifest_lock:
+        manifest = _load_manifest()
+        previous = manifest.get(paper_id, {})
+        manifest[paper_id] = {
+            "status": status,
+            "ingested_at": datetime.now(timezone.utc).isoformat(),
+            "error": error,
+            "pdf_filename": pdf_filename or previous.get("pdf_filename"),
+        }
+        _save_manifest(manifest)
+
+
+def _ingest_paper(paper_id: str, pdf_filename: str) -> None:
+    pdf_path = PDF_DIR / pdf_filename
+    try:
+        _mark_paper(paper_id, "processing", pdf_filename=pdf_filename)
+
+        # Phase 1: build FAISS index
+        from src.autolit.rag_query import build_index_for_pdf
+        index_dir = INDEX_DIR / paper_id
+        build_index_for_pdf(pdf_path, index_dir)
+
+        # Phase 2: field-by-field extraction
+        from src.autolit.extraction_agent import summarize_paper_structured
+        summary = summarize_paper_structured(paper_id)
+
+        # Persist summary JSON
+        SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
+        summary_path = SUMMARIES_DIR / f"{paper_id}.json"
+        summary_path.write_text(
+            json.dumps(summary.model_dump(), indent=2), encoding="utf-8"
+        )
+
+        _mark_paper(paper_id, "indexed", pdf_filename=pdf_filename)
+    except Exception as exc:
+        _mark_paper(paper_id, "error", error=str(exc), pdf_filename=pdf_filename)
+
+
+def _ingest_worker() -> None:
+    while True:
+        paper_id, pdf_filename = _ingest_queue.get()
+        try:
+            _ingest_paper(paper_id, pdf_filename)
+        finally:
+            _ingest_queue.task_done()
+
+
+def _ensure_ingest_worker() -> None:
+    global _ingest_worker_started
+    with _ingest_worker_lock:
+        if _ingest_worker_started:
+            return
+        threading.Thread(target=_ingest_worker, daemon=True, name="autolit-ingest").start()
+        _ingest_worker_started = True
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +135,7 @@ app = FastAPI(title="autolit API")
 @app.on_event("startup")
 async def _sync_manifest() -> None:
     """Populate the manifest from summaries on disk and reset orphaned processing entries."""
+    _ensure_ingest_worker()
     manifest = _load_manifest()
     changed = False
 
@@ -93,7 +152,43 @@ async def _sync_manifest() -> None:
                 changed = True
 
     # Reset stuck "processing" entries — threads don't survive restarts
-    for pid, meta in manifest.items():
+    to_requeue: List[Tuple[str, str]] = []
+    for pid, meta in list(manifest.items()):
+        recoverable_interruption = (
+            meta.get("status") == "error"
+            and str(meta.get("error") or "").startswith("Ingestion interrupted")
+        )
+        if meta.get("status") not in {"queued", "processing"} and not recoverable_interruption:
+            continue
+
+        has_summary = (SUMMARIES_DIR / f"{pid}.json").exists()
+        pdf_filename = meta.get("pdf_filename") or f"{pid}.pdf"
+        pdf_path = PDF_DIR / pdf_filename
+        if has_summary:
+            manifest[pid] = {
+                "status": "indexed",
+                "ingested_at": meta.get("ingested_at"),
+                "error": None,
+                "pdf_filename": pdf_filename,
+            }
+        elif pdf_path.exists():
+            manifest[pid] = {
+                "status": "queued",
+                "ingested_at": meta.get("ingested_at"),
+                "error": None,
+                "pdf_filename": pdf_filename,
+            }
+            to_requeue.append((pid, pdf_path.name))
+        else:
+            manifest[pid] = {
+                "status": "error",
+                "ingested_at": meta.get("ingested_at"),
+                "error": "Ingestion interrupted and the uploaded PDF is missing.",
+                "pdf_filename": pdf_filename,
+            }
+        changed = True
+
+    for pid, meta in ():
         if meta.get("status") == "processing":
             has_summary = (SUMMARIES_DIR / f"{pid}.json").exists()
             manifest[pid] = {
@@ -106,6 +201,9 @@ async def _sync_manifest() -> None:
     if changed:
         _save_manifest(manifest)
 
+    for item in to_requeue:
+        _ingest_queue.put(item)
+
 
 # ---------------------------------------------------------------------------
 # GET /api/papers
@@ -115,7 +213,8 @@ async def _sync_manifest() -> None:
 @app.get("/api/papers")
 async def get_papers() -> List[Dict[str, Any]]:
     """Return all known papers with their current status."""
-    manifest = _load_manifest()
+    with _manifest_lock:
+        manifest = _load_manifest()
     result = []
     for paper_id, meta in manifest.items():
         has_summary = (SUMMARIES_DIR / f"{paper_id}.json").exists()
@@ -126,6 +225,7 @@ async def get_papers() -> List[Dict[str, Any]]:
                 "has_summary": has_summary,
                 "ingested_at": meta.get("ingested_at"),
                 "error": meta.get("error"),
+                "pdf_filename": meta.get("pdf_filename"),
             }
         )
     return result
@@ -139,44 +239,23 @@ async def get_papers() -> List[Dict[str, Any]]:
 @app.post("/api/ingest")
 async def ingest_pdf(file: UploadFile = File(...)) -> Dict[str, str]:
     """Upload a PDF and kick off Phase 1 + 2 in a background thread."""
-    if not (file.filename or "").lower().endswith(".pdf"):
+    filename = Path(file.filename or "").name
+    if not filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are accepted.")
 
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "PDF exceeds 100 MB limit.")
 
-    paper_id = Path(file.filename).stem
+    paper_id = Path(filename).stem
     PDF_DIR.mkdir(parents=True, exist_ok=True)
-    pdf_path = PDF_DIR / file.filename
+    pdf_path = PDF_DIR / filename
     pdf_path.write_bytes(content)
 
-    _mark_paper(paper_id, "processing")
-
-    def _ingest() -> None:
-        try:
-            # Phase 1: build FAISS index
-            from src.autolit.rag_query import build_index_for_pdf
-            index_dir = INDEX_DIR / paper_id
-            build_index_for_pdf(pdf_path, index_dir)
-
-            # Phase 2: field-by-field extraction
-            from src.autolit.extraction_agent import summarize_paper_structured
-            summary = summarize_paper_structured(paper_id)
-
-            # Persist summary JSON
-            SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
-            summary_path = SUMMARIES_DIR / f"{paper_id}.json"
-            summary_path.write_text(
-                json.dumps(summary.model_dump(), indent=2), encoding="utf-8"
-            )
-
-            _mark_paper(paper_id, "indexed")
-        except Exception as exc:
-            _mark_paper(paper_id, "error", error=str(exc))
-
-    threading.Thread(target=_ingest, daemon=True).start()
-    return {"paper_id": paper_id, "status": "processing"}
+    _ensure_ingest_worker()
+    _mark_paper(paper_id, "queued", pdf_filename=filename)
+    _ingest_queue.put((paper_id, filename))
+    return {"paper_id": paper_id, "status": "queued"}
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +334,7 @@ async def survey_stream(request: SurveyRequest) -> StreamingResponse:
                 summaries_dir=str(SUMMARIES_DIR),
                 surveys_dir=str(SURVEYS_DIR),
                 top_k=request.top_k,
-                paper_ids=request.paper_ids or None,
+                paper_ids=request.paper_ids,
                 progress_callback=_progress,
             )
 
