@@ -5,7 +5,7 @@ Usage (from project root):
     python run.py
 
 Opens http://localhost:8000 in your browser.
-Requires Ollama to be running: ollama serve
+Requires GROQ_API_KEY to be set in your environment or .env file.
 """
 import os
 import sys
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     print("\n  autolit")
     print("  ───────────────────────────────")
     print("  UI:     http://localhost:8000")
-    print("  Make sure Ollama is running.")
+    print("  Make sure GROQ_API_KEY is configured.")
     print("  Press Ctrl+C to stop.\n")
 
     threading.Thread(target=_open_browser, daemon=True).start()

@@ -290,7 +290,7 @@ class SurveyRequest(BaseModel):
     topic: str
     paper_ids: Optional[List[str]] = None
     top_k: int = 3
-    model: str = "llama3"
+    model: str = "llama-3.3-70b-versatile"
 
 
 @app.post("/api/survey/stream")

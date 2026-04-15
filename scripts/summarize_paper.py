@@ -41,8 +41,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="llama3",
-        help="Ollama model name (default: llama3)",
+        default="llama-3.3-70b-versatile",
+        help="Groq model name (default: llama-3.3-70b-versatile)",
     )
 
     args = parser.parse_args()

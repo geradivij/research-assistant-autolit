@@ -1,28 +1,30 @@
 # autolit
 
-A local, multi-agent pipeline for academic literature review. Drop in PDFs, get back a structured survey — no API keys, no cloud, no data leaving your machine.
+A web-first, multi-agent pipeline for academic literature review. Drop in PDFs, let autolit index and summarize them, choose which papers to include, then generate a structured Markdown survey.
 
 ```
-data/pdfs/*.pdf  →  per-paper summaries  →  multi-paper survey (Markdown)
+PDF upload -> per-paper FAISS indexes -> structured summaries -> multi-paper survey
 ```
 
-Everything runs on a local Ollama instance + FAISS. The full pipeline for 3 papers takes roughly 5–10 minutes depending on your hardware.
+The app uses FAISS plus a local sentence-transformers embedding model for retrieval, and Groq-hosted chat models for extraction and survey writing. PDF contents are stored locally in `data/` and generated outputs are written to `outputs/`.
 
 ---
 
 ## What It Does
 
-1. **Ingests PDFs** — extracts text, chunks it with overlap, builds a FAISS vector index per paper
-2. **Extracts structured summaries** — for each paper, independently retrieves and extracts 7 fields (task, approach, datasets, metrics, key results, limitations, overview) using RAG + a local LLM
-3. **Generates a survey** — three agents work in sequence: a selector picks the most relevant papers for your topic, a comparator produces a comparison table and critique, a writer produces a full Markdown survey
+1. **Ingests PDFs** - extracts text, chunks it with overlap, and builds one FAISS vector index per paper.
+2. **Extracts structured summaries** - retrieves targeted context for 7 fields: task, approach, datasets, metrics, key results, limitations, and overview.
+3. **Generates a survey** - selector, comparator, and writer agents choose relevant papers, compare them, and produce a Markdown literature survey.
+4. **Provides a browser UI** - drag-and-drop PDFs, live paper status, visible ingestion errors, paper include/exclude controls, streamed pipeline logs, and rendered survey output.
 
 ---
 
 ## Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com) running locally with `llama3` pulled: `ollama pull llama3`
-- ~400MB disk for the sentence-transformers embedding model (downloaded automatically on first use)
+- A Groq API key in `GROQ_API_KEY`
+- Internet access for Groq model calls
+- Around 400 MB disk for the `all-MiniLM-L6-v2` sentence-transformers embedding model, downloaded on first use
 
 ---
 
@@ -38,65 +40,89 @@ source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Make sure Ollama is running:
-```bash
-ollama serve   # if not already running as a service
+Create a `.env` file:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
 ---
 
-## Usage
+## Run The Web App
 
-### Step 1 — Add PDFs
-
-Put your PDFs in `data/pdfs/`:
-```
-data/pdfs/
-├── attention_is_all_you_need.pdf
-├── bert.pdf
-└── gpt4.pdf
+```bash
+python run.py
 ```
 
-The filename without `.pdf` becomes the `paper_id` used throughout the pipeline.
+Open:
 
-### Step 2 — Summarize papers
+```text
+http://localhost:8000
+```
 
-Run this for each paper you want to include:
+From the UI you can:
+
+- Drop or browse for PDFs.
+- Watch each paper move through `queued`, `processing`, `indexed`, or `error`.
+- Exclude indexed papers from survey consideration with the `x` button.
+- Re-include excluded papers with the `+` button.
+- Enter a topic and run the multi-agent survey pipeline.
+- Export the generated Markdown survey.
+
+Errored papers are hidden from the left panel so they do not clutter the active paper list.
+
+---
+
+## CLI Usage
+
+The browser UI is the main path, but the original scripts are still useful for direct runs.
+
+### Summarize One Paper
+
+Put a PDF in `data/pdfs/`. The filename without `.pdf` is the `paper_id`.
+
 ```bash
 python scripts/summarize_paper.py --paper_id attention_is_all_you_need
 ```
 
-This builds the FAISS index (if it doesn't exist) and runs field-by-field RAG extraction. Output:
-```
+This builds the FAISS index if needed and writes:
+
+```text
 outputs/summaries/attention_is_all_you_need.json
 ```
 
-The JSON has 7 fields: `task`, `approach`, `datasets`, `metrics`, `key_results`, `limitations`, `notes`.
+The JSON contains:
 
-You can pass a different Ollama model:
-```bash
-python scripts/summarize_paper.py --paper_id bert --model llama3.2
+```text
+task, approach, datasets, metrics, key_results, limitations, notes
 ```
 
-### Step 3 — Generate a survey
+You can pass a Groq model name:
 
-Once you've summarized at least 2 papers:
+```bash
+python scripts/summarize_paper.py --paper_id bert --model llama-3.3-70b-versatile
+```
+
+### Generate A Survey
+
+Once summaries exist:
+
 ```bash
 python scripts/generate_survey.py --topic "transformer architectures" --top_k 3
 ```
 
-Three agents run in sequence:
-1. **Selector** — picks the `top_k` most relevant papers for your topic
-2. **Comparator** — produces a structured comparison table + critique
-3. **Writer** — writes a full Markdown survey with Introduction, Individual Papers, Comparison, Limitations, and Future Work sections
+Output:
 
-Output: `outputs/surveys/transformer_architectures_survey.md`
+```text
+outputs/surveys/transformer_architectures_survey.md
+```
 
 Options:
-```
---topic          The research topic (required)
+
+```text
+--topic          Research topic (required)
 --top_k          Number of papers to select (default: 3)
---summaries_dir  Where to read Phase 2 summaries (default: outputs/summaries)
+--summaries_dir  Where to read summaries (default: outputs/summaries)
 --surveys_dir    Where to write the survey (default: outputs/surveys)
 ```
 
@@ -104,11 +130,13 @@ Options:
 
 ## How It Works
 
-**Ingestion** — PyMuPDF extracts text page by page. Text is split into 1000-character chunks with 200-character overlap (so content near boundaries appears in two chunks, improving retrieval). Chunks are embedded with `all-MiniLM-L6-v2` (sentence-transformers) and stored in a FAISS flat index on disk.
+**Ingestion** - PyMuPDF extracts page text. Text is split into 1000-character chunks with 200-character overlap. Chunks are embedded with `all-MiniLM-L6-v2` and stored in a FAISS flat index under `data/indexes/`.
 
-**Extraction** — 7 independent RAG queries, one per output field. Each field has a targeted search query (e.g., the `datasets` query looks for "dataset names like CIFAR, ImageNet, WikiText"). Top-k retrieved chunks become the context for a single, strict LLM prompt. Separate calls per field are more reliable than asking for all 7 in one prompt — local models frequently produce malformed JSON on large output schemas.
+**Extraction** - Each summary field runs independently. The app retrieves field-specific chunks and asks the LLM a small targeted question. This is more reliable than asking for one large JSON object in a single prompt.
 
-**Survey generation** — three agents wired by `phase3/pipeline.py`. The selector sends all paper summaries to the LLM and asks for ranked paper IDs as JSON. The comparator receives the selected papers and produces a comparison table (JSON) and prose critique in delimited blocks. The writer takes all inputs and produces structured Markdown. All agents use a repair loop that re-prompts the LLM if JSON parsing fails.
+**Survey generation** - `src/autolit/phase3/pipeline.py` wires three agents together. The selector picks relevant papers, the comparator creates a structured table and critique, and the writer turns those materials into a Markdown survey.
+
+**Upload handling** - The API queues uploads and processes them one at a time. This avoids overlapping embedding/model work and keeps paper status visible in the UI.
 
 For the full technical picture, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -116,22 +144,19 @@ For the full technical picture, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Project Layout
 
-```
-data/pdfs/          Put your PDFs here
-data/indexes/       FAISS indexes (auto-built, safe to delete)
+```text
+data/pdfs/          Uploaded or manually added PDFs
+data/indexes/       FAISS indexes and chunks, safe to rebuild
 outputs/summaries/  Per-paper JSON summaries
 outputs/surveys/    Generated Markdown surveys
-src/autolit/        Pipeline source code
+src/autolit/api.py   FastAPI backend and static web serving
+src/autolit/web/     Single-file React UI served by FastAPI
+src/autolit/         Pipeline source code
   pdf_loader.py       PDF text extraction
   chunking.py         Overlapping text chunking
   vector_store.py     FAISS index build/load/search
   extraction_agent.py Field-by-field RAG extraction
   phase3/             Multi-agent survey pipeline
-    contracts.py        JSON parsing + LLM repair loop
-    selection_agent.py  Agent 1: pick relevant papers
-    comparator_agent.py Agent 2: compare + critique
-    writer_agent.py     Agent 3: write Markdown survey
-    pipeline.py         Orchestrator
 scripts/            CLI entry points
 ```
 
@@ -139,27 +164,25 @@ scripts/            CLI entry points
 
 ## Known Limitations
 
-**Extraction quality varies.** Local 8B models sometimes misread a paper's topic, especially if the relevant sections are buried or the paper has unusual structure. The per-field retrieval approach helps but doesn't fully solve this.
+**Requires Groq API access.** The current LLM client uses `langchain-groq` and reads `GROQ_API_KEY` from the environment.
 
-**No tests yet.** Correctness is verified by reading outputs. A pytest suite (unit + integration) is the immediate next priority — see [DESIGN.md](DESIGN.md).
+**Extraction quality varies.** Retrieval helps, but papers with unusual formatting, missing abstracts, or results buried in appendices may still produce weak summaries.
 
-**CLI-only.** A web UI with live pipeline streaming is in design — see [DESIGN.md](DESIGN.md).
+**No pytest suite yet.** There are script-style smoke tests, but no full unit/integration test suite.
 
-**Phase 3 model is hard-coded to `llama3`.** Phase 2 accepts `--model`; Phase 3 doesn't yet.
-
-**Runs from project root only.** Paths are relative to the working directory. Running scripts from other directories will fail.
+**Paths are project-root relative.** Run the app and scripts from the repository root.
 
 ---
 
 ## Roadmap
 
-- [ ] pytest suite — unit tests (mocked, no Ollama) + integration tests
-- [ ] FastAPI + React web UI — drag-and-drop PDFs, live agent log, rendered survey
+- [ ] pytest suite with mocked LLM tests plus optional integration tests
+- [ ] Model selection in the web UI
+- [ ] Better retry/reprocess controls for failed papers
+- [ ] Parallel field extraction with controlled concurrency
 - [ ] `python -m autolit` entry point
-- [ ] Parallel field extraction in Phase 2
-- [ ] Model selection in Phase 3
 
-See [DESIGN.md](DESIGN.md) for the full plan with API contracts, component specs, and build order.
+See [DESIGN.md](DESIGN.md) for additional design notes.
 
 ---
 
